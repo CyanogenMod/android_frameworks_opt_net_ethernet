@@ -97,7 +97,20 @@ class NetworkFactory extends Handler {
 }
 
 /**
- * This class tracks the data connection associated with Ethernet.
+ * Manages connectivity for an Ethernet interface.
+ *
+ * Ethernet Interfaces may be present at boot time or appear after boot (e.g.,
+ * for Ethernet adapters connected over USB). This class currently supports
+ * only one interface. When an interface appears on the system (or is present
+ * at boot time) this class will start tracking it and bring it up, and will
+ * attempt to connect when requested. Any other interfaces that subsequently
+ * appear will be ignored until the tracked interface disappears. Only
+ * interfaces whose names match the <code>config_ethernet_iface_regex</code>
+ * regular expression are tracked.
+ *
+ * This class reports a static network score of 70 when it is tracking an
+ * interface and that interface's link is up, and a score of 0 otherwise.
+ *
  * @hide
  */
 class EthernetNetworkFactory implements NetworkFactory.Callback {
@@ -106,7 +119,7 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
     private static final int NETWORK_SCORE = 70;
     private static final boolean DBG = true;
 
-    /** Tracks interface changes. Called from the NetworkManagementService thread. */
+    /** Tracks interface changes. Called from NetworkManagementService. */
     private InterfaceObserver mInterfaceObserver;
 
     /** For static IP configuration */
@@ -120,10 +133,10 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
     private NetworkAgent mNetworkAgent;
     private NetworkFactory mFactory;
 
-    /** Product-dependent regular expression of interface names we want to track. */
+    /** Product-dependent regular expression of interface names we track. */
     private static String mIfaceMatch = "";
 
-    /** Data members. All accesses must be synchronized(this). */
+    /** Data members. All accesses to these must be synchronized(this). */
     private static String mIface = "";
     private String mHwAddr;
     private static boolean mLinkUp;
@@ -136,9 +149,12 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         initNetworkCapabilities();
     }
 
+    /**
+     * Updates interface state variables.
+     * Called on link state changes or on startup.
+     */
     private void updateInterfaceState(String iface, boolean up) {
         if (!mIface.equals(iface)) {
-            // We only support one interface.
             return;
         }
         Log.d(TAG, "updateInterface: " + iface + " link " + (up ? "up" : "down"));
@@ -146,8 +162,10 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         synchronized(this) {
             mLinkUp = up;
             mNetworkInfo.setIsAvailable(up);
-            DetailedState state = up ? DetailedState.CONNECTED: DetailedState.DISCONNECTED;
-            mNetworkInfo.setDetailedState(state, null, mHwAddr);
+            if (!up) {
+                // Tell the agent we're disconnected. It will call disconnect().
+                mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
+            }
             mNetworkAgent.sendNetworkScore(mLinkUp? NETWORK_SCORE : 0);
             updateAgent();
         }
@@ -219,6 +237,8 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
             mIface = "";
             mHwAddr = null;
             mNetworkInfo.setExtraInfo(null);
+            mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_ETHERNET, 0, NETWORK_TYPE, "");
+            mLinkProperties = new LinkProperties();
         }
     }
 
@@ -242,7 +262,7 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         }
     }
 
-    public void updateAgent() {
+    public synchronized void updateAgent() {
         if (DBG) {
             Log.i(TAG, "Updating mNetworkAgent with: " +
                   mNetworkCapabilities + ", " +
@@ -250,34 +270,65 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
                   mLinkProperties);
         }
         mNetworkAgent.sendNetworkCapabilities(mNetworkCapabilities);
-        mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+        // Send LinkProperties before NetworkInfo.
+        //
+        // This is because if we just connected, as soon as we send the agent a
+        // connected NetworkInfo, the agent will register with CS, and at that
+        // point  the current LinkProperties will be empty, with no IP
+        // addresses, DNS servers or  routes, only an interface name. (The
+        // agent will refuse to register if LinkProperties are null, but not if
+        // they are "empty" like this.)
+        //
+        // This causes two problems:
+        //
+        // 1. ConnectivityService brings up the network with empty
+        //    LinkProperties, and thus no routes and no DNS servers.
+        // 2. When we do send LinkProperties immediately after that, the agent
+        //    does not pass them on to ConnectivityService because its
+        //    mAsyncChannel is null.
+        //
+        // TODO: Fix NetworkAgent to make sure that sending updates just after
+        // connecting works properly.
         mNetworkAgent.sendLinkProperties(mLinkProperties);
+        mNetworkAgent.sendNetworkInfo(mNetworkInfo);
     }
 
     /* Called by the NetworkAgent on the handler thread. */
     public void connect() {
-        // TODO: Handle DHCP renew.
         Thread dhcpThread = new Thread(new Runnable() {
             public void run() {
                 if (DBG) Log.i(TAG, "dhcpThread: mNetworkInfo=" + mNetworkInfo);
-                mNetworkInfo.setDetailedState(DetailedState.OBTAINING_IPADDR, null, mHwAddr);
+                synchronized(this) {
+                    mNetworkInfo.setDetailedState(DetailedState.OBTAINING_IPADDR, null, mHwAddr);
+                    updateAgent();
+                }
                 LinkProperties linkProperties;
 
                 IpConfiguration config = mEthernetManager.getConfiguration();
 
                 if (config.ipAssignment == IpAssignment.STATIC) {
                     linkProperties = config.linkProperties;
-                    linkProperties.setInterfaceName(mIface);
                     setStaticIpAddress(linkProperties);
                 } else {
                     DhcpResults dhcpResults = new DhcpResults();
-                    // TODO: support more than one DHCP client.
+                    // TODO: Handle DHCP renewals better.
+                    // In general runDhcp handles DHCP renewals for us, because
+                    // the dhcp client stays running, but if the renewal fails,
+                    // we will lose our IP address and connectivity without
+                    // noticing.
                     if (!NetworkUtils.runDhcp(mIface, dhcpResults)) {
                         Log.e(TAG, "DHCP request error:" + NetworkUtils.getDhcpError());
-                        mNetworkAgent.sendNetworkScore(0);
+                        synchronized(EthernetNetworkFactory.this) {
+                            // DHCP failed. Tell the agent we now have a score
+                            // of 0, and it will call disconnect for us. We'll
+                            // attempt to reconnect when we next see a link up
+                            // event, which resets the score to NETWORK_SCORE.
+                            mNetworkAgent.sendNetworkScore(0);
+                        }
                         return;
                     }
                     linkProperties = dhcpResults.linkProperties;
+                    linkProperties.setInterfaceName(mIface);
                 }
                 if (config.proxySettings == ProxySettings.STATIC) {
                     linkProperties.setHttpProxy(config.linkProperties.getHttpProxy());
@@ -294,6 +345,11 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         dhcpThread.start();
     }
 
+    /**
+      * Clears layer 3 properties and reports disconnect.
+      * Does not touch interface state variables such as link state and MAC address.
+      * Called when the tracked interface loses link or disappears.
+      */
     public void disconnect() {
         NetworkUtils.stopDhcp(mIface);
 
@@ -356,8 +412,20 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         try {
             final String[] ifaces = mNMService.listInterfaces();
             for (String iface : ifaces) {
-                if (maybeTrackInterface(iface)) {
-                    break;
+                synchronized(this) {
+                    if (maybeTrackInterface(iface)) {
+                        // We have our interface. Track it.
+                        // Note: if the interface already has link (e.g., if we
+                        // crashed and got restarted while it was running),
+                        // we need to fake a link up notification so we start
+                        // configuring it. Since we're already holding the lock,
+                        // any real link up/down notification will only arrive
+                        // after we've done this.
+                        if (mNMService.getInterfaceConfig(iface).hasFlag("running")) {
+                            updateInterfaceState(iface, true);
+                        }
+                        break;
+                    }
                 }
             }
         } catch (RemoteException e) {
@@ -366,12 +434,7 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
     }
 
     public synchronized void stop() {
-        disconnect();
-        mIface = "";
-        mHwAddr = null;
-        mLinkUp = false;
-        mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_ETHERNET, 0, NETWORK_TYPE, "");
-        mLinkProperties = new LinkProperties();
+        stopTrackingInterface(mIface);
     }
 
     public void onRequestNetwork(NetworkRequest request, int currentScore) {
