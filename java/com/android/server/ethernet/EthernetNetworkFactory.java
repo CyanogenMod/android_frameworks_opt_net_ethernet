@@ -18,7 +18,6 @@ package com.android.server.ethernet;
 
 import android.content.Context;
 import android.net.ConnectivityManager;
-import android.net.ConnectivityServiceProtocol.NetworkFactoryProtocol;
 import android.net.DhcpResults;
 import android.net.InterfaceConfiguration;
 import android.net.NetworkUtils;
@@ -29,6 +28,7 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.NetworkAgent;
 import android.net.NetworkCapabilities;
+import android.net.NetworkFactory;
 import android.net.NetworkInfo;
 import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkRequest;
@@ -51,51 +51,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
-class NetworkFactory extends Handler {
-    public interface Callback {
-        public void onRequestNetwork(NetworkRequest request, int currentScore);
-        public void onCancelRequest(NetworkRequest request);
-    }
-
-    private String mName;
-    private Callback mCallback;
-    private ConnectivityManager mCM;
-
-    NetworkFactory(String name, Context context, Looper looper, Callback callback) {
-        super(looper);
-        mCallback = callback;
-        mName = name;
-        mCM = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
-    }
-
-    public void register() {
-        logi("Registering network factory");
-        mCM.registerNetworkFactory(new Messenger(this), mName);
-    }
-
-    @Override
-    public void handleMessage(Message message) {
-        switch(message.what) {
-            case NetworkFactoryProtocol.CMD_REQUEST_NETWORK:
-                mCallback.onRequestNetwork((NetworkRequest) message.obj, message.arg1);
-                break;
-            case NetworkFactoryProtocol.CMD_CANCEL_REQUEST:
-                mCallback.onCancelRequest((NetworkRequest) message.obj);
-                break;
-            default:
-                loge("Unhandled message " + message.what);
-        }
-    }
-
-    private void logi(String s) {
-        Log.i("NetworkFactory" + mName, s);
-    }
-
-    private void loge(String s) {
-        Log.e("NetworkFactory" + mName, s);
-    }
-}
-
 /**
  * Manages connectivity for an Ethernet interface.
  *
@@ -113,8 +68,8 @@ class NetworkFactory extends Handler {
  *
  * @hide
  */
-class EthernetNetworkFactory implements NetworkFactory.Callback {
-    private static final String NETWORK_TYPE = "ETHERNET";
+class EthernetNetworkFactory {
+    private static final String NETWORK_TYPE = "Ethernet";
     private static final String TAG = "EthernetNetworkFactory";
     private static final int NETWORK_SCORE = 70;
     private static final boolean DBG = true;
@@ -131,7 +86,8 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
     /* To communicate with ConnectivityManager */
     private NetworkCapabilities mNetworkCapabilities;
     private NetworkAgent mNetworkAgent;
-    private NetworkFactory mFactory;
+    private LocalNetworkFactory mFactory;
+    private Context mContext;
 
     /** Product-dependent regular expression of interface names we track. */
     private static String mIfaceMatch = "";
@@ -148,6 +104,20 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         mLinkProperties = new LinkProperties();
         initNetworkCapabilities();
     }
+
+    private class LocalNetworkFactory extends NetworkFactory {
+        LocalNetworkFactory(String name, Context context, Looper looper) {
+            super(looper, context, name, new NetworkCapabilities());
+        }
+
+        protected void startNetwork() {
+            onRequestNetwork();
+        }
+        protected void stopNetwork() {
+            onCancelRequest();
+        }
+    }
+
 
     /**
      * Updates interface state variables.
@@ -166,8 +136,9 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
                 // Tell the agent we're disconnected. It will call disconnect().
                 mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
             }
-            mNetworkAgent.sendNetworkScore(mLinkUp? NETWORK_SCORE : 0);
+            mNetworkAgent.sendNetworkScore(mLinkUp? NETWORK_SCORE : -1);
             updateAgent();
+            mFactory.setScoreFilter(up ? NETWORK_SCORE : -1);
         }
     }
 
@@ -232,7 +203,7 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
             return;
 
         Log.d(TAG, "Stopped tracking interface " + iface);
-        disconnect();
+        onCancelRequest();
         synchronized (this) {
             mIface = "";
             mHwAddr = null;
@@ -262,46 +233,28 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         }
     }
 
-    public synchronized void updateAgent() {
-        if (DBG) {
-            Log.i(TAG, "Updating mNetworkAgent with: " +
-                  mNetworkCapabilities + ", " +
-                  mNetworkInfo + ", " +
-                  mLinkProperties);
+    public void updateAgent() {
+        synchronized (EthernetNetworkFactory.this) {
+            if (mNetworkAgent == null) return;
+            if (DBG) {
+                Log.i(TAG, "Updating mNetworkAgent with: " +
+                      mNetworkCapabilities + ", " +
+                      mNetworkInfo + ", " +
+                      mLinkProperties);
+            }
+            mNetworkAgent.sendNetworkCapabilities(mNetworkCapabilities);
+            mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+            mNetworkAgent.sendLinkProperties(mLinkProperties);
+            mNetworkAgent.sendNetworkScore(mLinkUp? NETWORK_SCORE : -1);
         }
-        mNetworkAgent.sendNetworkCapabilities(mNetworkCapabilities);
-        // Send LinkProperties before NetworkInfo.
-        //
-        // This is because if we just connected, as soon as we send the agent a
-        // connected NetworkInfo, the agent will register with CS, and at that
-        // point  the current LinkProperties will be empty, with no IP
-        // addresses, DNS servers or  routes, only an interface name. (The
-        // agent will refuse to register if LinkProperties are null, but not if
-        // they are "empty" like this.)
-        //
-        // This causes two problems:
-        //
-        // 1. ConnectivityService brings up the network with empty
-        //    LinkProperties, and thus no routes and no DNS servers.
-        // 2. When we do send LinkProperties immediately after that, the agent
-        //    does not pass them on to ConnectivityService because its
-        //    mAsyncChannel is null.
-        //
-        // TODO: Fix NetworkAgent to make sure that sending updates just after
-        // connecting works properly.
-        mNetworkAgent.sendLinkProperties(mLinkProperties);
-        mNetworkAgent.sendNetworkInfo(mNetworkInfo);
     }
 
-    /* Called by the NetworkAgent on the handler thread. */
-    public void connect() {
+    /* Called by the NetworkFactory on the handler thread. */
+    public void onRequestNetwork() {
+        // TODO: Handle DHCP renew.
         Thread dhcpThread = new Thread(new Runnable() {
             public void run() {
-                if (DBG) Log.i(TAG, "dhcpThread: mNetworkInfo=" + mNetworkInfo);
-                synchronized(this) {
-                    mNetworkInfo.setDetailedState(DetailedState.OBTAINING_IPADDR, null, mHwAddr);
-                    updateAgent();
-                }
+                if (DBG) Log.i(TAG, "dhcpThread(+" + mIface + "): mNetworkInfo=" + mNetworkInfo);
                 LinkProperties linkProperties;
 
                 IpConfiguration config = mEthernetManager.getConfiguration();
@@ -310,6 +263,11 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
                     linkProperties = config.linkProperties;
                     setStaticIpAddress(linkProperties);
                 } else {
+                    mNetworkInfo.setDetailedState(DetailedState.OBTAINING_IPADDR, null, mHwAddr);
+                    synchronized (EthernetNetworkFactory.this) {
+                        mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+                    }
+
                     DhcpResults dhcpResults = new DhcpResults();
                     // TODO: Handle DHCP renewals better.
                     // In general runDhcp handles DHCP renewals for us, because
@@ -323,8 +281,9 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
                             // of 0, and it will call disconnect for us. We'll
                             // attempt to reconnect when we next see a link up
                             // event, which resets the score to NETWORK_SCORE.
-                            mNetworkAgent.sendNetworkScore(0);
+                            mNetworkAgent.sendNetworkScore(-1);
                         }
+                        mFactory.setScoreFilter(-1);
                         return;
                     }
                     linkProperties = dhcpResults.linkProperties;
@@ -338,7 +297,15 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
                     mLinkProperties = linkProperties;
                     mNetworkInfo.setIsAvailable(true);
                     mNetworkInfo.setDetailedState(DetailedState.CONNECTED, null, mHwAddr);
-                    updateAgent();
+
+                    // Create our NetworkAgent.
+                    mNetworkAgent = new NetworkAgent(mFactory.getLooper(), mContext,
+                            NETWORK_TYPE, mNetworkInfo, mNetworkCapabilities, mLinkProperties,
+                            NETWORK_SCORE) {
+                        public void unwanted() {
+                            EthernetNetworkFactory.this.onCancelRequest();
+                        };
+                    };
                 }
             }
         });
@@ -350,14 +317,14 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
       * Does not touch interface state variables such as link state and MAC address.
       * Called when the tracked interface loses link or disappears.
       */
-    public void disconnect() {
+    public void onCancelRequest() {
         NetworkUtils.stopDhcp(mIface);
 
         synchronized(this) {
             mLinkProperties.clear();
-            mNetworkInfo.setIsAvailable(false);
             mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
             updateAgent();
+            mNetworkAgent = null;
         }
 
         try {
@@ -380,24 +347,13 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
         mIfaceMatch = context.getResources().getString(
                 com.android.internal.R.string.config_ethernet_iface_regex);
 
-        // Create our NetworkAgent.
-        mNetworkAgent = new NetworkAgent(target.getLooper(), context, NETWORK_TYPE) {
-            public synchronized void sendNetworkScore(int score) {
-                Log.i(TAG, "sendNetworkScore(" + score + ")");
-                super.sendNetworkScore(score);
-            }
-            public void connect() {
-                EthernetNetworkFactory.this.connect();
-            };
-            public void disconnect() {
-                EthernetNetworkFactory.this.disconnect();
-            };
-        };
-        mNetworkAgent.sendNetworkScore(0);
-
         // Create and register our NetworkFactory.
-        mFactory = new NetworkFactory(NETWORK_TYPE, context, target.getLooper(), this);
+        mFactory = new LocalNetworkFactory(NETWORK_TYPE, context, target.getLooper());
+        mFactory.setCapabilityFilter(mNetworkCapabilities);
+        mFactory.setScoreFilter(-1); // this set high when we have an iface
         mFactory.register();
+
+        mContext = context;
 
         // Start tracking interface change events.
         mInterfaceObserver = new InterfaceObserver();
@@ -434,18 +390,13 @@ class EthernetNetworkFactory implements NetworkFactory.Callback {
     }
 
     public synchronized void stop() {
-        stopTrackingInterface(mIface);
-    }
-
-    public void onRequestNetwork(NetworkRequest request, int currentScore) {
-        Log.i(TAG, "onRequestNetwork: (" + currentScore + "): " + request);
-        // TODO check that the transport is compatible.
-        mNetworkAgent.addNetworkRequest(request, currentScore);
-    }
-
-    public void onCancelRequest(NetworkRequest request) {
-        Log.i(TAG, "onCancelRequest: " + request);
-        mNetworkAgent.removeNetworkRequest(request);
+        onCancelRequest();
+        mIface = "";
+        mHwAddr = null;
+        mLinkUp = false;
+        mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_ETHERNET, 0, NETWORK_TYPE, "");
+        mLinkProperties = new LinkProperties();
+        mFactory.unregister();
     }
 
     private void initNetworkCapabilities() {
