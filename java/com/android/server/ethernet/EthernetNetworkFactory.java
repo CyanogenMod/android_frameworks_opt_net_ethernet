@@ -136,7 +136,6 @@ class EthernetNetworkFactory {
                 // Tell the agent we're disconnected. It will call disconnect().
                 mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
             }
-            mNetworkAgent.sendNetworkScore(mLinkUp? NETWORK_SCORE : -1);
             updateAgent();
             mFactory.setScoreFilter(up ? NETWORK_SCORE : -1);
         }
@@ -264,9 +263,6 @@ class EthernetNetworkFactory {
                     setStaticIpAddress(linkProperties);
                 } else {
                     mNetworkInfo.setDetailedState(DetailedState.OBTAINING_IPADDR, null, mHwAddr);
-                    synchronized (EthernetNetworkFactory.this) {
-                        mNetworkAgent.sendNetworkInfo(mNetworkInfo);
-                    }
 
                     DhcpResults dhcpResults = new DhcpResults();
                     // TODO: Handle DHCP renewals better.
@@ -276,13 +272,6 @@ class EthernetNetworkFactory {
                     // noticing.
                     if (!NetworkUtils.runDhcp(mIface, dhcpResults)) {
                         Log.e(TAG, "DHCP request error:" + NetworkUtils.getDhcpError());
-                        synchronized(EthernetNetworkFactory.this) {
-                            // DHCP failed. Tell the agent we now have a score
-                            // of 0, and it will call disconnect for us. We'll
-                            // attempt to reconnect when we next see a link up
-                            // event, which resets the score to NETWORK_SCORE.
-                            mNetworkAgent.sendNetworkScore(-1);
-                        }
                         mFactory.setScoreFilter(-1);
                         return;
                     }
