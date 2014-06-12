@@ -391,9 +391,8 @@ class EthernetNetworkFactory {
     private void initNetworkCapabilities() {
         mNetworkCapabilities = new NetworkCapabilities();
         mNetworkCapabilities.addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET);
-        mNetworkCapabilities.addNetworkCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-        mNetworkCapabilities.addNetworkCapability(
-                NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED);
+        mNetworkCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        mNetworkCapabilities.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED);
         // We have no useful data on bandwidth. Say 100M up and 100M down. :-(
         mNetworkCapabilities.setLinkUpstreamBandwidthKbps(100 * 1000);
         mNetworkCapabilities.setLinkDownstreamBandwidthKbps(100 * 1000);
