@@ -114,7 +114,6 @@ class EthernetNetworkFactory {
             onRequestNetwork();
         }
         protected void stopNetwork() {
-            onCancelRequest();
         }
     }
 
@@ -202,13 +201,13 @@ class EthernetNetworkFactory {
             return;
 
         Log.d(TAG, "Stopped tracking interface " + iface);
-        onCancelRequest();
         synchronized (this) {
             mIface = "";
             mHwAddr = null;
             mNetworkInfo.setExtraInfo(null);
             mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_ETHERNET, 0, NETWORK_TYPE, "");
             mLinkProperties = new LinkProperties();
+            updateAgent();
         }
     }
 
@@ -283,6 +282,10 @@ class EthernetNetworkFactory {
                 }
 
                 synchronized(EthernetNetworkFactory.this) {
+                    if (mNetworkAgent != null) {
+                        Log.e(TAG, "Already have a NetworkAgent - aborting new request");
+                        return;
+                    }
                     mLinkProperties = linkProperties;
                     mNetworkInfo.setIsAvailable(true);
                     mNetworkInfo.setDetailedState(DetailedState.CONNECTED, null, mHwAddr);
@@ -292,35 +295,31 @@ class EthernetNetworkFactory {
                             NETWORK_TYPE, mNetworkInfo, mNetworkCapabilities, mLinkProperties,
                             NETWORK_SCORE) {
                         public void unwanted() {
-                            EthernetNetworkFactory.this.onCancelRequest();
+                            synchronized(EthernetNetworkFactory.this) {
+                                if (this == mNetworkAgent) {
+                                    NetworkUtils.stopDhcp(mIface);
+
+                                    mLinkProperties.clear();
+                                    mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null,
+                                            mHwAddr);
+                                    updateAgent();
+                                    mNetworkAgent = null;
+                                    try {
+                                        mNMService.clearInterfaceAddresses(mIface);
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "Failed to clear addresses or disable ipv6" + e);
+                                    }
+                                } else {
+                                    Log.d(TAG, "Ignoring unwanted as we have a more modern " +
+                                            "instance");
+                                }
+                            }
                         };
                     };
                 }
             }
         });
         dhcpThread.start();
-    }
-
-    /**
-      * Clears layer 3 properties and reports disconnect.
-      * Does not touch interface state variables such as link state and MAC address.
-      * Called when the tracked interface loses link or disappears.
-      */
-    public void onCancelRequest() {
-        NetworkUtils.stopDhcp(mIface);
-
-        synchronized(this) {
-            mLinkProperties.clear();
-            mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
-            updateAgent();
-            mNetworkAgent = null;
-        }
-
-        try {
-            mNMService.clearInterfaceAddresses(mIface);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to clear addresses or disable ipv6" + e);
-        }
     }
 
     /**
@@ -379,12 +378,12 @@ class EthernetNetworkFactory {
     }
 
     public synchronized void stop() {
-        onCancelRequest();
         mIface = "";
         mHwAddr = null;
         mLinkUp = false;
         mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_ETHERNET, 0, NETWORK_TYPE, "");
         mLinkProperties = new LinkProperties();
+        updateAgent();
         mFactory.unregister();
     }
 
