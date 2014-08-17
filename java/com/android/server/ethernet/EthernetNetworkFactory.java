@@ -247,6 +247,9 @@ class EthernetNetworkFactory {
         }
     }
 
+    private static final String TCP_BUFFER_SIZES_ETHERNET =
+            "524288,1048576,3145728,524288,1048576,2097152";
+
     /* Called by the NetworkFactory on the handler thread. */
     public void onRequestNetwork() {
         // TODO: Handle DHCP renew.
@@ -280,6 +283,8 @@ class EthernetNetworkFactory {
                 if (config.proxySettings == ProxySettings.STATIC) {
                     linkProperties.setHttpProxy(config.linkProperties.getHttpProxy());
                 }
+
+                linkProperties.setTcpBufferSizes(TCP_BUFFER_SIZES_ETHERNET);
 
                 synchronized(EthernetNetworkFactory.this) {
                     if (mNetworkAgent != null) {
