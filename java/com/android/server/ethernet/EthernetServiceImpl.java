@@ -25,11 +25,11 @@ import android.net.IpConfiguration;
 import android.net.IpConfiguration.IpAssignment;
 import android.net.IpConfiguration.ProxySettings;
 import android.net.LinkAddress;
-import android.net.LinkProperties;
 import android.net.NetworkAgent;
 import android.net.NetworkInfo;
 import android.net.NetworkRequest;
 import android.net.RouteInfo;
+import android.net.StaticIpConfiguration;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.Handler;
@@ -143,10 +143,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
             // TODO: this does not check proxy settings, gateways, etc.
             // Fix this by making IpConfiguration a complete representation of static configuration.
             if (!config.equals(mIpConfiguration)) {
-                mIpConfiguration.ipAssignment = config.ipAssignment;
-                mIpConfiguration.proxySettings = config.proxySettings;
-                mIpConfiguration.linkProperties = new LinkProperties(config.linkProperties);
-
+                mIpConfiguration = new IpConfiguration(config);
                 mTracker.stop();
                 mTracker.start(mContext, mHandler);
             }

@@ -33,6 +33,7 @@ import android.net.NetworkInfo;
 import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkRequest;
 import android.net.EthernetManager;
+import android.net.StaticIpConfiguration;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.INetworkManagementService;
@@ -211,24 +212,23 @@ class EthernetNetworkFactory {
         }
     }
 
-    private void setStaticIpAddress(LinkProperties linkProperties) {
-        Log.i(TAG, "Applying static IPv4 configuration to " + mIface + ": " + mLinkProperties);
-        try {
-            InterfaceConfiguration config = mNMService.getInterfaceConfig(mIface);
-            for (LinkAddress address: linkProperties.getLinkAddresses()) {
-                // IPv6 uses autoconfiguration.
-                if (address.getAddress() instanceof Inet4Address) {
-                    config.setLinkAddress(address);
-                    // This API only supports one IPv4 address.
-                    mNMService.setInterfaceConfig(mIface, config);
-                    break;
-                }
+    private boolean setStaticIpAddress(StaticIpConfiguration staticConfig) {
+        if (staticConfig.ipAddress != null &&
+                staticConfig.gateway != null &&
+                staticConfig.dnsServers.size() > 0) {
+            try {
+                Log.i(TAG, "Applying static IPv4 configuration to " + mIface + ": " + staticConfig);
+                InterfaceConfiguration config = mNMService.getInterfaceConfig(mIface);
+                config.setLinkAddress(staticConfig.ipAddress);
+                mNMService.setInterfaceConfig(mIface, config);
+                return true;
+            } catch(RemoteException|IllegalStateException e) {
+               Log.e(TAG, "Setting static IP address failed: " + e.getMessage());
             }
-        } catch(RemoteException e) {
-           Log.e(TAG, "Setting static IP address failed: " + e.getMessage());
-        } catch(IllegalStateException e) {
-           Log.e(TAG, "Setting static IP address failed: " + e.getMessage());
+        } else {
+            Log.e(TAG, "Invalid static IP configuration.");
         }
+        return false;
     }
 
     public void updateAgent() {
@@ -260,9 +260,12 @@ class EthernetNetworkFactory {
 
                 IpConfiguration config = mEthernetManager.getConfiguration();
 
-                if (config.ipAssignment == IpAssignment.STATIC) {
-                    linkProperties = config.linkProperties;
-                    setStaticIpAddress(linkProperties);
+                if (config.getIpAssignment() == IpAssignment.STATIC) {
+                    if (!setStaticIpAddress(config.getStaticIpConfiguration())) {
+                        // We've already logged an error.
+                        return;
+                    }
+                    linkProperties = config.getStaticIpConfiguration().toLinkProperties(mIface);
                 } else {
                     mNetworkInfo.setDetailedState(DetailedState.OBTAINING_IPADDR, null, mHwAddr);
 
@@ -277,11 +280,11 @@ class EthernetNetworkFactory {
                         mFactory.setScoreFilter(-1);
                         return;
                     }
-                    linkProperties = dhcpResults.linkProperties;
-                    linkProperties.setInterfaceName(mIface);
+                    linkProperties = dhcpResults.toLinkProperties(mIface);
                 }
-                if (config.proxySettings == ProxySettings.STATIC) {
-                    linkProperties.setHttpProxy(config.linkProperties.getHttpProxy());
+                if (config.getProxySettings() == ProxySettings.STATIC ||
+                        config.getProxySettings() == ProxySettings.PAC) {
+                    linkProperties.setHttpProxy(config.getHttpProxy());
                 }
 
                 linkProperties.setTcpBufferSizes(TCP_BUFFER_SIZES_ETHERNET);
@@ -383,12 +386,21 @@ class EthernetNetworkFactory {
     }
 
     public synchronized void stop() {
+        NetworkUtils.stopDhcp(mIface);
+        // ConnectivityService will only forget our NetworkAgent if we send it a NetworkInfo object
+        // with a state of DISCONNECTED or SUSPENDED. So we can't simply clear our NetworkInfo here:
+        // that sets the state to IDLE, and ConnectivityService will still think we're connected.
+        //
+        // TODO: stop using explicit comparisons to DISCONNECTED / SUSPENDED in ConnectivityService,
+        // and instead use isConnectedOrConnecting().
+        mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
+        mLinkUp = false;
+        updateAgent();
+        mLinkProperties = new LinkProperties();
+        mNetworkAgent = null;
         mIface = "";
         mHwAddr = null;
-        mLinkUp = false;
         mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_ETHERNET, 0, NETWORK_TYPE, "");
-        mLinkProperties = new LinkProperties();
-        updateAgent();
         mFactory.unregister();
     }
 

@@ -19,7 +19,6 @@ package com.android.server.ethernet;
 import android.net.IpConfiguration;
 import android.net.IpConfiguration.IpAssignment;
 import android.net.IpConfiguration.ProxySettings;
-import android.net.LinkProperties;
 import android.os.Environment;
 import android.util.Log;
 import android.util.SparseArray;
@@ -44,7 +43,7 @@ public class EthernetConfigStore extends IpConfigStore {
 
         if (networks.size() == 0) {
             Log.w(TAG, "No Ethernet configuration found. Using default.");
-            return new IpConfiguration(IpAssignment.DHCP, ProxySettings.NONE, new LinkProperties());
+            return new IpConfiguration(IpAssignment.DHCP, ProxySettings.NONE, null, null);
         }
 
         if (networks.size() > 1) {
