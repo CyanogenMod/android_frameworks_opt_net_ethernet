@@ -45,8 +45,11 @@ import android.os.ServiceManager;
 import android.text.TextUtils;
 import android.util.Log;
 
+import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.net.BaseNetworkObserver;
 
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
 import java.net.Inet4Address;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -412,5 +415,22 @@ class EthernetNetworkFactory {
         // We have no useful data on bandwidth. Say 100M up and 100M down. :-(
         mNetworkCapabilities.setLinkUpstreamBandwidthKbps(100 * 1000);
         mNetworkCapabilities.setLinkDownstreamBandwidthKbps(100 * 1000);
+    }
+
+    synchronized void dump(FileDescriptor fd, IndentingPrintWriter pw, String[] args) {
+        if (!TextUtils.isEmpty(mIface)) {
+            pw.println("Tracking interface: " + mIface);
+            pw.increaseIndent();
+            pw.println("MAC address: " + mHwAddr);
+            pw.println("Link state: " + (mLinkUp ? "up" : "down"));
+            pw.decreaseIndent();
+        } else {
+            pw.println("Not tracking any interface");
+        }
+
+        pw.println();
+        pw.println("NetworkInfo: " + mNetworkInfo);
+        pw.println("LinkProperties: " + mLinkProperties);
+        pw.println("NetworkAgent: " + mNetworkAgent);
     }
 }
