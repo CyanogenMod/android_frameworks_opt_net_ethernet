@@ -67,7 +67,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
 
     private Handler mHandler;
     private NetworkInfo mNetworkInfo;
-    private EthernetNetworkFactory mTracker;
+    private final EthernetNetworkFactory mTracker;
 
     public EthernetServiceImpl(Context context) {
         mContext = context;
@@ -160,8 +160,14 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
                     + ", uid=" + Binder.getCallingUid());
             return;
         }
-        pw.println("Stored Ethernet configuration: ");
 
+        pw.println("Current Ethernet state: ");
+        pw.increaseIndent();
+        mTracker.dump(fd, pw, args);
+        pw.decreaseIndent();
+
+        pw.println();
+        pw.println("Stored Ethernet configuration: ");
         pw.increaseIndent();
         pw.println(mIpConfiguration);
         pw.decreaseIndent();
