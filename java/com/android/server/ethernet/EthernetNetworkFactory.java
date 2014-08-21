@@ -250,9 +250,6 @@ class EthernetNetworkFactory {
         }
     }
 
-    private static final String TCP_BUFFER_SIZES_ETHERNET =
-            "524288,1048576,3145728,524288,1048576,2097152";
-
     /* Called by the NetworkFactory on the handler thread. */
     public void onRequestNetwork() {
         // TODO: Handle DHCP renew.
@@ -290,7 +287,11 @@ class EthernetNetworkFactory {
                     linkProperties.setHttpProxy(config.getHttpProxy());
                 }
 
-                linkProperties.setTcpBufferSizes(TCP_BUFFER_SIZES_ETHERNET);
+                String tcpBufferSizes = mContext.getResources().getString(
+                        com.android.internal.R.string.config_ethernet_tcp_buffers);
+                if (TextUtils.isEmpty(tcpBufferSizes) == false) {
+                    linkProperties.setTcpBufferSizes(tcpBufferSizes);
+                }
 
                 synchronized(EthernetNetworkFactory.this) {
                     if (mNetworkAgent != null) {
