@@ -140,6 +140,9 @@ class EthernetNetworkFactory {
                 mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
             }
             updateAgent();
+            // set our score lower than any network could go
+            // so we get dropped.  TODO - just unregister the factory
+            // when link goes down.
             mFactory.setScoreFilter(up ? NETWORK_SCORE : -1);
         }
     }
@@ -246,7 +249,8 @@ class EthernetNetworkFactory {
             mNetworkAgent.sendNetworkCapabilities(mNetworkCapabilities);
             mNetworkAgent.sendNetworkInfo(mNetworkInfo);
             mNetworkAgent.sendLinkProperties(mLinkProperties);
-            mNetworkAgent.sendNetworkScore(mLinkUp? NETWORK_SCORE : -1);
+            // never set the network score below 0.
+            mNetworkAgent.sendNetworkScore(mLinkUp? NETWORK_SCORE : 0);
         }
     }
 
@@ -277,6 +281,8 @@ class EthernetNetworkFactory {
                     // noticing.
                     if (!NetworkUtils.runDhcp(mIface, dhcpResults)) {
                         Log.e(TAG, "DHCP request error:" + NetworkUtils.getDhcpError());
+                        // set our score lower than any network could go
+                        // so we get dropped.
                         mFactory.setScoreFilter(-1);
                         return;
                     }
