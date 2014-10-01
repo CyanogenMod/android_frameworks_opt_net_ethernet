@@ -208,13 +208,18 @@ class EthernetNetworkFactory {
             return;
 
         Log.d(TAG, "Stopped tracking interface " + iface);
+        // TODO: Unify this codepath with stop().
         synchronized (this) {
+            NetworkUtils.stopDhcp(mIface);
             mIface = "";
             mHwAddr = null;
             mNetworkInfo.setExtraInfo(null);
+            mLinkUp = false;
+            mNetworkInfo.setDetailedState(DetailedState.DISCONNECTED, null, mHwAddr);
+            updateAgent();
+            mNetworkAgent = null;
             mNetworkInfo = new NetworkInfo(ConnectivityManager.TYPE_ETHERNET, 0, NETWORK_TYPE, "");
             mLinkProperties = new LinkProperties();
-            updateAgent();
         }
     }
 
