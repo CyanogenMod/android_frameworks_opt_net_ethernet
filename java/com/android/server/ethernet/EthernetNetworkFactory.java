@@ -166,6 +166,7 @@ class EthernetNetworkFactory {
     private void setInterfaceUp(String iface) {
         // Bring up the interface so we get link status indications.
         try {
+            NetworkUtils.stopDhcp(iface);
             mNMService.setInterfaceUp(iface);
             String hwAddr = null;
             InterfaceConfiguration config = mNMService.getInterfaceConfig(iface);
