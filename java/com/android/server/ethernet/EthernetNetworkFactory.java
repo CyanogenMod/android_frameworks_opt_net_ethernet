@@ -262,7 +262,7 @@ class EthernetNetworkFactory {
         // TODO: Handle DHCP renew.
         Thread dhcpThread = new Thread(new Runnable() {
             public void run() {
-                if (DBG) Log.i(TAG, "dhcpThread(+" + mIface + "): mNetworkInfo=" + mNetworkInfo);
+                if (DBG) Log.i(TAG, "dhcpThread(" + mIface + "): mNetworkInfo=" + mNetworkInfo);
                 LinkProperties linkProperties;
 
                 IpConfiguration config = mEthernetManager.getConfiguration();
@@ -287,6 +287,9 @@ class EthernetNetworkFactory {
                         // set our score lower than any network could go
                         // so we get dropped.
                         mFactory.setScoreFilter(-1);
+                        // If DHCP timed out (as opposed to failing), the DHCP client will still be
+                        // running, because in M we changed its timeout to infinite. Stop it now.
+                        NetworkUtils.stopDhcp(mIface);
                         return;
                     }
                     linkProperties = dhcpResults.toLinkProperties(mIface);
