@@ -396,7 +396,7 @@ class EthernetNetworkFactory {
                     }
                 }
             }
-        } catch (RemoteException e) {
+        } catch (RemoteException|IllegalStateException e) {
             Log.e(TAG, "Could not get list of interfaces " + e);
         }
     }
