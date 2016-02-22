@@ -33,6 +33,7 @@ import android.net.NetworkInfo;
 import android.net.NetworkInfo.DetailedState;
 import android.net.StaticIpConfiguration;
 import android.net.ip.IpManager;
+import android.net.ip.IpManager.WaitForProvisioningCallback;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.INetworkManagementService;
@@ -274,36 +275,6 @@ class EthernetNetworkFactory {
         }
     }
 
-    private class IpManagerCallback extends IpManager.Callback {
-        private LinkProperties mCallbackLinkProperties;
-
-        public LinkProperties waitForProvisioning() {
-            synchronized (this) {
-                try {
-                    wait();
-                } catch (InterruptedException e) {}
-                return mCallbackLinkProperties;
-            }
-        }
-
-        @Override
-        public void onProvisioningSuccess(LinkProperties newLp) {
-            synchronized (this) {
-                mCallbackLinkProperties = newLp;
-                notify();
-            }
-        }
-
-        @Override
-        public void onProvisioningFailure(LinkProperties newLp) {
-            synchronized (this) {
-                mCallbackLinkProperties = null;
-                notify();
-            }
-        }
-    }
-
-
     /* Called by the NetworkFactory on the handler thread. */
     public void onRequestNetwork() {
         synchronized(EthernetNetworkFactory.this) {
@@ -332,13 +303,36 @@ class EthernetNetworkFactory {
                     linkProperties = config.getStaticIpConfiguration().toLinkProperties(mIface);
                 } else {
                     mNetworkInfo.setDetailedState(DetailedState.OBTAINING_IPADDR, null, mHwAddr);
-                    IpManagerCallback blockingCallback = new IpManagerCallback();
+                    WaitForProvisioningCallback ipmCallback = new WaitForProvisioningCallback() {
+                        @Override
+                        public void onLinkPropertiesChange(LinkProperties newLp) {
+                            synchronized(EthernetNetworkFactory.this) {
+                                if (mNetworkAgent != null && mNetworkInfo.isConnected()) {
+                                    mNetworkAgent.sendLinkProperties(newLp);
+                                }
+                            }
+                        }
+                    };
+
                     synchronized(EthernetNetworkFactory.this) {
                         stopIpManagerLocked();
-                        mIpManager = new IpManager(mContext, mIface, blockingCallback);
+                        mIpManager = new IpManager(mContext, mIface, ipmCallback);
+
+                        if (config.getProxySettings() == ProxySettings.STATIC ||
+                                config.getProxySettings() == ProxySettings.PAC) {
+                            mIpManager.setHttpProxy(config.getHttpProxy());
+                        }
+
+                        final String tcpBufferSizes = mContext.getResources().getString(
+                                com.android.internal.R.string.config_ethernet_tcp_buffers);
+                        if (!TextUtils.isEmpty(tcpBufferSizes)) {
+                            mIpManager.setTcpBufferSizes(tcpBufferSizes);
+                        }
+
                         mIpManager.startProvisioning();
                     }
-                    linkProperties = blockingCallback.waitForProvisioning();
+
+                    linkProperties = ipmCallback.waitForProvisioning();
                     if (linkProperties == null) {
                         Log.e(TAG, "IP provisioning error");
                         // set our score lower than any network could go
@@ -349,17 +343,6 @@ class EthernetNetworkFactory {
                         }
                         return;
                     }
-                }
-
-                if (config.getProxySettings() == ProxySettings.STATIC ||
-                        config.getProxySettings() == ProxySettings.PAC) {
-                    linkProperties.setHttpProxy(config.getHttpProxy());
-                }
-
-                final String tcpBufferSizes = mContext.getResources().getString(
-                        com.android.internal.R.string.config_ethernet_tcp_buffers);
-                if (!TextUtils.isEmpty(tcpBufferSizes)) {
-                    linkProperties.setTcpBufferSizes(tcpBufferSizes);
                 }
 
                 synchronized(EthernetNetworkFactory.this) {
