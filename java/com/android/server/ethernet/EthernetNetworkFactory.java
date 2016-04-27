@@ -33,6 +33,7 @@ import android.net.NetworkInfo;
 import android.net.NetworkInfo.DetailedState;
 import android.net.StaticIpConfiguration;
 import android.net.ip.IpManager;
+import android.net.ip.IpManager.ProvisioningConfiguration;
 import android.net.ip.IpManager.WaitForProvisioningCallback;
 import android.os.Handler;
 import android.os.IBinder;
@@ -283,7 +284,6 @@ class EthernetNetworkFactory {
             }
         }
 
-        // TODO: Handle DHCP renew.
         final Thread ipProvisioningThread = new Thread(new Runnable() {
             public void run() {
                 if (DBG) {
@@ -308,6 +308,7 @@ class EthernetNetworkFactory {
                         public void onLinkPropertiesChange(LinkProperties newLp) {
                             synchronized(EthernetNetworkFactory.this) {
                                 if (mNetworkAgent != null && mNetworkInfo.isConnected()) {
+                                    mLinkProperties = newLp;
                                     mNetworkAgent.sendLinkProperties(newLp);
                                 }
                             }
@@ -329,7 +330,11 @@ class EthernetNetworkFactory {
                             mIpManager.setTcpBufferSizes(tcpBufferSizes);
                         }
 
-                        mIpManager.startProvisioning();
+                        final ProvisioningConfiguration provisioningConfiguration =
+                                mIpManager.buildProvisioningConfiguration()
+                                        .withProvisioningTimeoutMs(0)
+                                        .build();
+                        mIpManager.startProvisioning(provisioningConfiguration);
                     }
 
                     linkProperties = ipmCallback.waitForProvisioning();
@@ -526,5 +531,11 @@ class EthernetNetworkFactory {
         pw.println("NetworkInfo: " + mNetworkInfo);
         pw.println("LinkProperties: " + mLinkProperties);
         pw.println("NetworkAgent: " + mNetworkAgent);
+        if (mIpManager != null) {
+            pw.println("IpManager:");
+            pw.increaseIndent();
+            mIpManager.dump(fd, pw, args);
+            pw.decreaseIndent();
+        }
     }
 }
